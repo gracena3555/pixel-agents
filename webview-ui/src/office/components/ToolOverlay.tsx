@@ -91,6 +91,7 @@ export function ToolOverlay({
         const isSelected = selectedId === id;
         const isHovered = hoveredId === id;
         const isSub = ch.isSubagent;
+        const hasProfileName = !!ch.profileName;
 
         // Only show for hovered or selected agents (unless always-show is on)
         if (!alwaysShowOverlay && !isSelected && !isHovered) return null;
@@ -173,6 +174,20 @@ export function ToolOverlay({
                 />
               )}
               <div style={{ overflow: 'hidden' }}>
+                {hasProfileName && (
+                  <span
+                    style={{
+                      fontSize: '22px',
+                      fontWeight: 'bold',
+                      color: 'var(--pixel-accent)',
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      display: 'block',
+                    }}
+                  >
+                    {ch.profileName}
+                  </span>
+                )}
                 <span
                   style={{
                     fontSize: isSub ? '20px' : '22px',

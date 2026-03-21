@@ -17,6 +17,10 @@ export interface AgentState {
   hadToolsInTurn: boolean;
   /** Workspace folder name (only set for multi-root workspaces) */
   folderName?: string;
+  /** Profile ID if launched from a profile */
+  profileId?: string;
+  /** Profile display name */
+  profileName?: string;
 }
 
 export interface PersistedAgent {
@@ -26,4 +30,8 @@ export interface PersistedAgent {
   projectDir: string;
   /** Workspace folder name (only set for multi-root workspaces) */
   folderName?: string;
+  /** Profile ID if launched from a profile */
+  profileId?: string;
+  /** Profile display name */
+  profileName?: string;
 }

@@ -31,6 +31,8 @@ import {
 import { ensureProjectScan } from './fileWatcher.js';
 import type { LayoutWatcher } from './layoutPersistence.js';
 import { readLayoutFromFile, watchLayoutFile, writeLayoutToFile } from './layoutPersistence.js';
+import type { AgentProfile } from './profilePersistence.js';
+import { readProfilesFromFile, writeProfilesToFile } from './profilePersistence.js';
 import type { AgentState } from './types.js';
 
 export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
@@ -78,6 +80,12 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.onDidReceiveMessage(async (message) => {
       if (message.type === 'openClaude') {
+        // Look up profile if specified
+        let profile: AgentProfile | undefined;
+        if (message.profileId) {
+          const profiles = readProfilesFromFile();
+          profile = profiles.find((p) => p.id === message.profileId);
+        }
         await launchNewTerminal(
           this.nextAgentId,
           this.nextTerminalIndex,
@@ -93,6 +101,7 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
           this.webview,
           this.persistAgents,
           message.folderPath as string | undefined,
+          profile,
         );
       } else if (message.type === 'focusAgent') {
         const agent = this.agents.get(message.id);
@@ -113,6 +122,28 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         writeLayoutToFile(message.layout as Record<string, unknown>);
       } else if (message.type === 'setSoundEnabled') {
         this.context.globalState.update(GLOBAL_KEY_SOUND_ENABLED, message.enabled);
+      } else if (message.type === 'loadProfiles') {
+        const profiles = readProfilesFromFile();
+        this.webview?.postMessage({ type: 'profilesLoaded', profiles });
+        // Also discover MCP servers and skills
+        this.sendMcpServers();
+        this.discoverSkills();
+      } else if (message.type === 'saveProfile') {
+        const profile = message.profile as AgentProfile;
+        const profiles = readProfilesFromFile();
+        const idx = profiles.findIndex((p) => p.id === profile.id);
+        if (idx >= 0) {
+          profiles[idx] = profile;
+        } else {
+          profiles.push(profile);
+        }
+        writeProfilesToFile(profiles);
+        this.webview?.postMessage({ type: 'profilesLoaded', profiles });
+      } else if (message.type === 'deleteProfile') {
+        const profileId = message.profileId as string;
+        const profiles = readProfilesFromFile().filter((p) => p.id !== profileId);
+        writeProfilesToFile(profiles);
+        this.webview?.postMessage({ type: 'profilesLoaded', profiles });
       } else if (message.type === 'webviewReady') {
         restoreAgents(
           this.context,
@@ -133,6 +164,12 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
         // Send persisted settings to webview
         const soundEnabled = this.context.globalState.get<boolean>(GLOBAL_KEY_SOUND_ENABLED, true);
         this.webview?.postMessage({ type: 'settingsLoaded', soundEnabled });
+
+        // Send profiles, MCP servers, and skills
+        const profiles = readProfilesFromFile();
+        this.webview?.postMessage({ type: 'profilesLoaded', profiles });
+        this.sendMcpServers();
+        this.discoverSkills();
 
         // Send workspace folders to webview (only when multi-root)
         const wsFolders = vscode.workspace.workspaceFolders;
@@ -374,6 +411,89 @@ export class PixelAgentsViewProvider implements vscode.WebviewViewProvider {
     vscode.window.showInformationMessage(
       `Pixel Agents: Default layout exported as revision ${nextRevision} to ${targetPath}`,
     );
+  }
+
+  /** Discover MCP server names from .mcp.json files and send to webview */
+  private sendMcpServers(): void {
+    const servers: string[] = [];
+    const seen = new Set<string>();
+
+    const readMcpFile = (filePath: string) => {
+      try {
+        if (!fs.existsSync(filePath)) return;
+        const raw = fs.readFileSync(filePath, 'utf-8');
+        const parsed = JSON.parse(raw) as { mcpServers?: Record<string, unknown> };
+        if (parsed.mcpServers) {
+          for (const name of Object.keys(parsed.mcpServers)) {
+            if (!seen.has(name)) {
+              seen.add(name);
+              servers.push(name);
+            }
+          }
+        }
+      } catch {
+        /* ignore parse errors */
+      }
+    };
+
+    // Read from each workspace folder root
+    const wsFolders = vscode.workspace.workspaceFolders;
+    if (wsFolders) {
+      for (const folder of wsFolders) {
+        readMcpFile(path.join(folder.uri.fsPath, '.mcp.json'));
+      }
+    }
+
+    // Read from ~/.claude/.mcp.json
+    readMcpFile(path.join(os.homedir(), '.claude', '.mcp.json'));
+
+    this.webview?.postMessage({ type: 'mcpServersLoaded', servers });
+  }
+
+  /** Discover skills from ~/.claude/skills/ and .claude/skills/ in each workspace folder */
+  private discoverSkills(): void {
+    const skills: Array<{ name: string; description: string; source: 'user' | 'project' }> = [];
+
+    const scanSkillsDir = (dir: string, source: 'user' | 'project') => {
+      try {
+        if (!fs.existsSync(dir)) return;
+        const entries = fs.readdirSync(dir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const skillMdPath = path.join(dir, entry.name, 'SKILL.md');
+          if (!fs.existsSync(skillMdPath)) continue;
+          try {
+            const content = fs.readFileSync(skillMdPath, 'utf-8');
+            // Parse YAML frontmatter between --- delimiters
+            const fmMatch = /^---\s*\n([\s\S]*?)\n---/.exec(content);
+            if (!fmMatch) continue;
+            const fm = fmMatch[1];
+            const nameMatch = /^name:\s*(.+)$/m.exec(fm);
+            const descMatch = /^description:\s*(.+)$/m.exec(fm);
+            const name = nameMatch?.[1]?.trim().replace(/^["']|["']$/g, '') || entry.name;
+            const description = descMatch?.[1]?.trim().replace(/^["']|["']$/g, '') || '';
+            skills.push({ name, description, source });
+          } catch {
+            /* ignore individual skill parse errors */
+          }
+        }
+      } catch {
+        /* ignore directory read errors */
+      }
+    };
+
+    // User-level skills
+    scanSkillsDir(path.join(os.homedir(), '.claude', 'skills'), 'user');
+
+    // Project-level skills from each workspace folder
+    const wsFolders = vscode.workspace.workspaceFolders;
+    if (wsFolders) {
+      for (const folder of wsFolders) {
+        scanSkillsDir(path.join(folder.uri.fsPath, '.claude', 'skills'), 'project');
+      }
+    }
+
+    this.webview?.postMessage({ type: 'skillsLoaded', skills });
   }
 
   private startLayoutWatcher(): void {

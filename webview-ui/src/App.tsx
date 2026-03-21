@@ -2,10 +2,12 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { BottomToolbar } from './components/BottomToolbar.js';
 import { DebugView } from './components/DebugView.js';
+import { ProfileModal } from './components/ProfileModal.js';
 import { ZoomControls } from './components/ZoomControls.js';
 import { PULSE_ANIMATION_DURATION_SEC } from './constants.js';
 import { useEditorActions } from './hooks/useEditorActions.js';
 import { useEditorKeyboard } from './hooks/useEditorKeyboard.js';
+import type { AgentProfile } from './hooks/useExtensionMessages.js';
 import { useExtensionMessages } from './hooks/useExtensionMessages.js';
 import { OfficeCanvas } from './office/components/OfficeCanvas.js';
 import { ToolOverlay } from './office/components/ToolOverlay.js';
@@ -147,6 +149,9 @@ function App() {
     layoutWasReset,
     loadedAssets,
     workspaceFolders,
+    profiles,
+    mcpServers,
+    skills,
   } = useExtensionMessages(getOfficeState, editor.setLastSavedLayout, isEditDirty);
 
   // Show migration notice once layout reset is detected
@@ -155,6 +160,23 @@ function App() {
 
   const [isDebugMode, setIsDebugMode] = useState(false);
   const [alwaysShowOverlay, setAlwaysShowOverlay] = useState(false);
+
+  // Profile modal state
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [editingProfile, setEditingProfile] = useState<AgentProfile | null>(null);
+
+  const handleOpenProfileModal = useCallback((profile?: AgentProfile) => {
+    setEditingProfile(profile ?? null);
+    setIsProfileModalOpen(true);
+  }, []);
+
+  const handleSaveProfile = useCallback((profile: AgentProfile) => {
+    vscode.postMessage({ type: 'saveProfile', profile });
+  }, []);
+
+  const handleDeleteProfile = useCallback((id: string) => {
+    vscode.postMessage({ type: 'deleteProfile', profileId: id });
+  }, []);
 
   const handleToggleDebugMode = useCallback(() => setIsDebugMode((prev) => !prev), []);
   const handleToggleAlwaysShowOverlay = useCallback(
@@ -287,6 +309,8 @@ function App() {
         alwaysShowOverlay={alwaysShowOverlay}
         onToggleAlwaysShowOverlay={handleToggleAlwaysShowOverlay}
         workspaceFolders={workspaceFolders}
+        profiles={profiles}
+        onOpenProfileModal={handleOpenProfileModal}
       />
 
       {editor.isEditMode && editor.isDirty && (
@@ -369,6 +393,16 @@ function App() {
           onSelectAgent={handleSelectAgent}
         />
       )}
+
+      <ProfileModal
+        isOpen={isProfileModalOpen}
+        onClose={() => setIsProfileModalOpen(false)}
+        onSave={handleSaveProfile}
+        onDelete={handleDeleteProfile}
+        profile={editingProfile}
+        mcpServers={mcpServers}
+        skills={skills}
+      />
 
       {showMigrationNotice && (
         <div

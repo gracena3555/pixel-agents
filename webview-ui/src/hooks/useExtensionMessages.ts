@@ -46,6 +46,23 @@ export interface WorkspaceFolder {
   path: string;
 }
 
+export interface AgentProfile {
+  id: string;
+  name: string;
+  role: string;
+  palette: number;
+  hueShift: number;
+  systemPrompt: string;
+  allowedTools: string[];
+  model?: string;
+}
+
+export interface SkillInfo {
+  name: string;
+  description: string;
+  source: 'user' | 'project';
+}
+
 export interface ExtensionMessageState {
   agents: number[];
   selectedAgent: number | null;
@@ -57,6 +74,9 @@ export interface ExtensionMessageState {
   layoutWasReset: boolean;
   loadedAssets?: { catalog: FurnitureAsset[]; sprites: Record<string, string[][]> };
   workspaceFolders: WorkspaceFolder[];
+  profiles: AgentProfile[];
+  mcpServers: string[];
+  skills: SkillInfo[];
 }
 
 function saveAgentSeats(os: OfficeState): void {
@@ -87,6 +107,9 @@ export function useExtensionMessages(
     { catalog: FurnitureAsset[]; sprites: Record<string, string[][]> } | undefined
   >();
   const [workspaceFolders, setWorkspaceFolders] = useState<WorkspaceFolder[]>([]);
+  const [profiles, setProfiles] = useState<AgentProfile[]>([]);
+  const [mcpServers, setMcpServers] = useState<string[]>([]);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
 
   // Track whether initial layout has been loaded (ref to avoid re-render)
   const layoutReadyRef = useRef(false);
@@ -99,6 +122,7 @@ export function useExtensionMessages(
       hueShift?: number;
       seatId?: string;
       folderName?: string;
+      profileName?: string;
     }> = [];
 
     const handler = (e: MessageEvent) => {
@@ -122,7 +146,7 @@ export function useExtensionMessages(
         }
         // Add buffered agents now that layout (and seats) are correct
         for (const p of pendingAgents) {
-          os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName);
+          os.addAgent(p.id, p.palette, p.hueShift, p.seatId, true, p.folderName, p.profileName);
         }
         pendingAgents = [];
         layoutReadyRef.current = true;
@@ -136,9 +160,12 @@ export function useExtensionMessages(
       } else if (msg.type === 'agentCreated') {
         const id = msg.id as number;
         const folderName = msg.folderName as string | undefined;
+        const profileName = msg.profileName as string | undefined;
+        const palette = msg.palette as number | undefined;
+        const hueShift = msg.hueShift as number | undefined;
         setAgents((prev) => (prev.includes(id) ? prev : [...prev, id]));
         setSelectedAgent(id);
-        os.addAgent(id, undefined, undefined, undefined, undefined, folderName);
+        os.addAgent(id, palette, hueShift, undefined, undefined, folderName, profileName);
         saveAgentSeats(os);
       } else if (msg.type === 'agentClosed') {
         const id = msg.id as number;
@@ -173,6 +200,7 @@ export function useExtensionMessages(
           { palette?: number; hueShift?: number; seatId?: string }
         >;
         const folderNames = (msg.folderNames || {}) as Record<number, string>;
+        const profileNamesMap = (msg.profileNames || {}) as Record<number, string>;
         // Buffer agents — they'll be added in layoutLoaded after seats are built
         for (const id of incoming) {
           const m = meta[id];
@@ -182,6 +210,7 @@ export function useExtensionMessages(
             hueShift: m?.hueShift,
             seatId: m?.seatId,
             folderName: folderNames[id],
+            profileName: profileNamesMap[id],
           });
         }
         setAgents((prev) => {
@@ -395,6 +424,12 @@ export function useExtensionMessages(
         } catch (err) {
           console.error(`❌ Webview: Error processing furnitureAssetsLoaded:`, err);
         }
+      } else if (msg.type === 'profilesLoaded') {
+        setProfiles(msg.profiles as AgentProfile[]);
+      } else if (msg.type === 'mcpServersLoaded') {
+        setMcpServers(msg.servers as string[]);
+      } else if (msg.type === 'skillsLoaded') {
+        setSkills(msg.skills as SkillInfo[]);
       }
     };
     window.addEventListener('message', handler);
@@ -413,5 +448,8 @@ export function useExtensionMessages(
     layoutWasReset,
     loadedAssets,
     workspaceFolders,
+    profiles,
+    mcpServers,
+    skills,
   };
 }

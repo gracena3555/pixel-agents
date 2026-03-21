@@ -190,4 +190,6 @@ export interface Character {
   matrixEffectSeeds: number[];
   /** Workspace folder name (only set for multi-root workspaces) */
   folderName?: string;
+  /** Profile display name — always visible as overlay label */
+  profileName?: string;
 }

@@ -11,6 +11,7 @@ import {
 } from './constants.js';
 import { ensureProjectScan, readNewLines, startFileWatching } from './fileWatcher.js';
 import { migrateAndLoadLayout } from './layoutPersistence.js';
+import type { AgentProfile } from './profilePersistence.js';
 import { cancelPermissionTimer, cancelWaitingTimer } from './timerManager.js';
 import type { AgentState, PersistedAgent } from './types.js';
 
@@ -38,19 +39,35 @@ export async function launchNewTerminal(
   webview: vscode.Webview | undefined,
   persistAgents: () => void,
   folderPath?: string,
+  profile?: AgentProfile,
 ): Promise<void> {
   const folders = vscode.workspace.workspaceFolders;
   const cwd = folderPath || folders?.[0]?.uri.fsPath;
   const isMultiRoot = !!(folders && folders.length > 1);
   const idx = nextTerminalIndexRef.current++;
+  const terminalName = profile ? `${profile.name} #${idx}` : `${TERMINAL_NAME_PREFIX} #${idx}`;
   const terminal = vscode.window.createTerminal({
-    name: `${TERMINAL_NAME_PREFIX} #${idx}`,
+    name: terminalName,
     cwd,
   });
   terminal.show();
 
   const sessionId = crypto.randomUUID();
-  terminal.sendText(`claude --session-id ${sessionId}`);
+
+  // Build CLI command with profile flags
+  let cmd = `claude --session-id ${sessionId}`;
+  if (profile?.systemPrompt) {
+    const tmpPrompt = path.join(os.tmpdir(), `pixel-agents-prompt-${sessionId}.txt`);
+    fs.writeFileSync(tmpPrompt, profile.systemPrompt);
+    cmd += ` --system-prompt "$(cat '${tmpPrompt}')"`;
+  }
+  if (profile?.allowedTools?.length) {
+    cmd += ` --allowedTools "${profile.allowedTools.join(',')}"`;
+  }
+  if (profile?.model) {
+    cmd += ` --model ${profile.model}`;
+  }
+  terminal.sendText(cmd);
 
   const projectDir = getProjectDirPath(cwd);
   if (!projectDir) {
@@ -81,13 +98,22 @@ export async function launchNewTerminal(
     permissionSent: false,
     hadToolsInTurn: false,
     folderName,
+    profileId: profile?.id,
+    profileName: profile?.name,
   };
 
   agents.set(id, agent);
   activeAgentIdRef.current = id;
   persistAgents();
   console.log(`[Pixel Agents] Agent ${id}: created for terminal ${terminal.name}`);
-  webview?.postMessage({ type: 'agentCreated', id, folderName });
+  webview?.postMessage({
+    type: 'agentCreated',
+    id,
+    folderName,
+    profileName: profile?.name,
+    palette: profile ? profile.palette : undefined,
+    hueShift: profile ? profile.hueShift : undefined,
+  });
 
   ensureProjectScan(
     projectDir,
@@ -187,6 +213,8 @@ export function persistAgents(
       jsonlFile: agent.jsonlFile,
       projectDir: agent.projectDir,
       folderName: agent.folderName,
+      profileId: agent.profileId,
+      profileName: agent.profileName,
     });
   }
   context.workspaceState.update(WORKSPACE_KEY_AGENTS, persisted);
@@ -236,6 +264,8 @@ export function restoreAgents(
       permissionSent: false,
       hadToolsInTurn: false,
       folderName: p.folderName,
+      profileId: p.profileId,
+      profileName: p.profileName,
     };
 
     agents.set(p.id, agent);
@@ -346,11 +376,15 @@ export function sendExistingAgents(
     Record<string, { palette?: number; seatId?: string }>
   >(WORKSPACE_KEY_AGENT_SEATS, {});
 
-  // Include folderName per agent
+  // Include folderName and profileName per agent
   const folderNames: Record<number, string> = {};
+  const profileNames: Record<number, string> = {};
   for (const [id, agent] of agents) {
     if (agent.folderName) {
       folderNames[id] = agent.folderName;
+    }
+    if (agent.profileName) {
+      profileNames[id] = agent.profileName;
     }
   }
   console.log(
@@ -362,6 +396,7 @@ export function sendExistingAgents(
     agents: agentIds,
     agentMeta,
     folderNames,
+    profileNames,
   });
 
   sendCurrentAgentStatuses(agents, webview);
