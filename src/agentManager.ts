@@ -277,6 +277,13 @@ export function restoreAgents(
   let restoredProjectDir: string | null = null;
 
   for (const p of persisted) {
+    // Skip agents already in the map — prevents duplicate file watchers on re-entry
+    // (webviewReady fires on every panel focus, re-calling restoreAgents each time)
+    if (agents.has(p.id)) {
+      knownJsonlFiles.add(p.jsonlFile);
+      continue;
+    }
+
     let terminal: vscode.Terminal | undefined;
     const isExternal = p.isExternal ?? false;
 
@@ -479,8 +486,8 @@ export function sendExistingAgents(
     folderNames,
     externalAgents,
   });
-
-  sendCurrentAgentStatuses(agents, webview);
+  // Note: sendCurrentAgentStatuses is called separately AFTER layoutLoaded
+  // so that agentStatus/agentToolStart messages arrive after characters are created.
 }
 
 export function sendCurrentAgentStatuses(
@@ -491,11 +498,13 @@ export function sendCurrentAgentStatuses(
   for (const [agentId, agent] of agents) {
     // Re-send active tools
     for (const [toolId, status] of agent.activeToolStatuses) {
+      const toolName = agent.activeToolNames.get(toolId) ?? '';
       webview.postMessage({
         type: 'agentToolStart',
         id: agentId,
         toolId,
         status,
+        toolName,
       });
     }
     // Re-send waiting status
