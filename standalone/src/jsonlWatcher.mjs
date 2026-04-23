@@ -8,8 +8,8 @@ const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const SCAN_INTERVAL_MS = 1000;
 const POLL_INTERVAL_MS = 500;
 const TEXT_IDLE_DELAY_MS = 5000;
-const STALE_AGENT_TIMEOUT_MS = 60_000; // remove agent after 60s of no JSONL activity
-const STALE_CHECK_INTERVAL_MS = 5000;
+const STALE_AGENT_TIMEOUT_MS = 24 * 60 * 60 * 1000; // 24h — keep characters alive while session exists
+const STALE_CHECK_INTERVAL_MS = 60_000;
 
 /**
  * Watches ~/.claude/projects/ for new JSONL files and tails them.
@@ -20,16 +20,22 @@ export class JsonlWatcher {
     this.broadcast = broadcast;
     this.agents = new Map(); // agentId -> agent state
     this.files = new Map(); // filePath -> { agentId, offset, buffer, idleTimer, folderName }
-    this.knownAtStart = new Set();
+    this.dormantOffsets = new Map(); // filePath -> size at last dormancy (pre-existing or evicted); adopted when size grows past this
     this.nextAgentId = 1;
   }
 
   start() {
-    // Snapshot existing JSONL files - we won't create agents for these
+    // Record current size of every pre-existing JSONL. We don't adopt them yet —
+    // adoption fires only when a file grows beyond its recorded size (i.e. the
+    // session is actively writing). This lets dormant historical sessions stay
+    // silent while live-but-idle sessions wake up on their next write.
     for (const { filePath } of collectAllJsonlFiles()) {
-      this.knownAtStart.add(filePath);
+      try {
+        const stat = fs.statSync(filePath);
+        this.dormantOffsets.set(filePath, stat.size);
+      } catch {}
     }
-    console.log(`[watcher] snapshot: ${this.knownAtStart.size} existing JSONL files (will be ignored)`);
+    console.log(`[watcher] dormant: ${this.dormantOffsets.size} pre-existing JSONL files (will adopt on next write)`);
     this.scanInterval = setInterval(() => this.scan(), SCAN_INTERVAL_MS);
     this.pollInterval = setInterval(() => this.pollAll(), POLL_INTERVAL_MS);
     this.staleInterval = setInterval(() => this.evictStale(), STALE_CHECK_INTERVAL_MS);
@@ -54,13 +60,22 @@ export class JsonlWatcher {
 
   scan() {
     for (const { filePath, projectDir, isSubagent } of collectAllJsonlFiles()) {
-      if (this.knownAtStart.has(filePath)) continue;
       if (this.files.has(filePath)) continue;
-      this.adoptFile(filePath, projectDir, isSubagent);
+      const dormantSize = this.dormantOffsets.get(filePath);
+      if (dormantSize !== undefined) {
+        // Pre-existing or previously-evicted: adopt only if the file has grown.
+        let stat;
+        try { stat = fs.statSync(filePath); } catch { continue; }
+        if (stat.size <= dormantSize) continue;
+        this.dormantOffsets.delete(filePath);
+        this.adoptFile(filePath, projectDir, isSubagent, dormantSize);
+      } else {
+        this.adoptFile(filePath, projectDir, isSubagent, 0);
+      }
     }
   }
 
-  adoptFile(filePath, projectHash, isSubagent = false) {
+  adoptFile(filePath, projectHash, isSubagent = false, initialOffset = 0) {
     const agentId = this.nextAgentId++;
     // project hash is original path with separators replaced by '-'; folderName = last segment
     const baseName = decodeFolderName(projectHash);
@@ -76,7 +91,7 @@ export class JsonlWatcher {
       lastDataAt: Date.now(),
     };
     this.agents.set(agentId, agentState);
-    this.files.set(filePath, { agentId, offset: 0, buffer: '', idleTimer: null, folderName });
+    this.files.set(filePath, { agentId, offset: initialOffset, buffer: '', idleTimer: null, folderName });
 
     console.log(`[watcher] adopted agent ${agentId}: ${path.basename(filePath)} (folder: ${folderName})`);
     this.broadcast({ type: 'agentCreated', id: agentId, folderName });
@@ -156,8 +171,12 @@ export class JsonlWatcher {
       if (!agent) continue;
       if (now - agent.lastDataAt > STALE_AGENT_TIMEOUT_MS) {
         console.log(`[watcher] evicting stale agent ${meta.agentId} (no data ${Math.round((now - agent.lastDataAt) / 1000)}s)`);
-        // Mark file as known so it won't be re-adopted on next scan
-        this.knownAtStart.add(filePath);
+        // Return file to the dormant pool at its current size so it can be re-adopted
+        // the next time the session writes more content.
+        try {
+          const stat = fs.statSync(filePath);
+          this.dormantOffsets.set(filePath, stat.size);
+        } catch {}
         this.removeFile(filePath);
       }
     }
