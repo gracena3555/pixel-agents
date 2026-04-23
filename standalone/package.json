@@ -1,0 +1,17 @@
+{
+  "name": "pixel-agents-standalone",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pixel-agents": "./bin/cli.mjs"
+  },
+  "scripts": {
+    "build": "cd ../webview-ui && npm run build",
+    "start": "node ./bin/cli.mjs"
+  },
+  "dependencies": {
+    "pngjs": "^7.0.0",
+    "ws": "^8.18.0"
+  }
+}
